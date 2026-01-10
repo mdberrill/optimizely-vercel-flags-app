@@ -1,11 +1,13 @@
 import Image from "next/image";
-import { reorderHomeHeading } from "../utils/flags/flags";
+import { simpleOptimizelyFlag } from "../utils/flags/simpleOptimizelyFlag";
 
 export default async function Home() {
-  const reorder = await reorderHomeHeading();
-  const headingText = reorder
-    ? "Edit the page.tsx file to get started."
-    : "To get started, edit the page.tsx file.";
+  const hasProductX = true;
+  const reorder = await simpleOptimizelyFlag();
+  const headingText =
+    reorder?.variationKey === "on"
+      ? "Edit the page.tsx file to get started."
+      : "To get started, edit the page.tsx file."; // control variant
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
