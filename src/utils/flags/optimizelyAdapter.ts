@@ -4,6 +4,10 @@ import {
   createBatchEventProcessor,
   createInstance,
   createPollingProjectConfigManager,
+  eventDispatcher,
+  EventDispatcher,
+  EventDispatcherResponse,
+  LogEvent,
   NOTIFICATION_TYPES,
   UserAttributes,
 } from "@optimizely/optimizely-sdk";
@@ -32,6 +36,29 @@ export type ForcedDecisionInput = {
   variationKey: string;
 };
 
+/*
+ * Custom Event Dispatcher that logs events before dispatching them.
+ * This could be used to send events to proxy
+ */
+export class CustomEventDispatcher implements EventDispatcher {
+  private baseDispatcher: EventDispatcher;
+
+  constructor() {
+    this.baseDispatcher = eventDispatcher;
+  }
+
+  async dispatchEvent(event: LogEvent): Promise<EventDispatcherResponse> {
+    // Custom behavior: Log the event
+    console.log("[CustomEventDispatcher] Dispatching event:", {
+      url: event.url,
+      method: event.httpVerb,
+      payload: event.params,
+    });
+
+    // Forward the event to the default dispatcher
+    return this.baseDispatcher.dispatchEvent(event);
+  }
+}
 /**
  * Parse the `x-decision-header` header to return an array of forced decision objects.
  */
@@ -85,7 +112,9 @@ export function optimizelyFlagsAdapter(
       autoUpdate: true,
     });
 
-    const eventProcessor = createBatchEventProcessor();
+    const eventProcessor = createBatchEventProcessor({
+      eventDispatcher: new CustomEventDispatcher(),
+    });
 
     optimizelyInstance = createInstance({
       projectConfigManager,
@@ -97,6 +126,32 @@ export function optimizelyFlagsAdapter(
       () => {
         if (process.env.NODE_ENV !== "production") {
           console.info("[Optimizely] Datafile loaded or updated");
+        }
+      }
+    );
+
+    optimizelyInstance.notificationCenter.addNotificationListener(
+      NOTIFICATION_TYPES.LOG_EVENT,
+      (LogEvent) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[Optimizely] Event logged:", LogEvent);
+        }
+      }
+    );
+
+    optimizelyInstance.notificationCenter.addNotificationListener(
+      NOTIFICATION_TYPES.DECISION,
+      (DecisionListenerPayload) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[Optimizely] Decision made:", DecisionListenerPayload);
+        }
+      }
+    );
+    optimizelyInstance.notificationCenter.addNotificationListener(
+      NOTIFICATION_TYPES.TRACK,
+      (TrackListenerPayload) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[Optimizely] Track made:", TrackListenerPayload);
         }
       }
     );
