@@ -1,26 +1,22 @@
 import { flag } from "flags/next";
-import { optimizelyAdapter } from "./optimizelyAdapter";
-import type { UserAttributes } from "@optimizely/optimizely-sdk";
+import { optimizelyFlagsAdapter } from "./optimizelyAdapter";
+import type {
+  FlagsOptimizelyDecision,
+  OptimizelyAdapterEntities,
+} from "./optimizelyAdapter";
 
-export type SimpleOptimizelyDecision = {
-  variationKey: string | null;
-  enabled: boolean;
-  variables: {
-    [variableKey: string]: unknown;
-  };
-  ruleKey: string | null;
-  flagKey: string;
-};
-
-export const simpleOptimizelyFlag = flag<SimpleOptimizelyDecision>({
+export const simpleOptimizelyFlag = flag<FlagsOptimizelyDecision>({
   key: "rollout_to_specific_audiences",
   identify({ cookies }) {
     const userId = cookies.get("sessionToken")?.value;
-    return { user: { id: userId }, attr: { HasUserProductX: true } };
+    const userEntites = {
+      user: { id: userId },
+      attr: { HasUserProductX: true },
+    } as OptimizelyAdapterEntities;
+    return userEntites;
   },
-  // delegate evaluation to our custom Optimizely adapter
-  adapter: optimizelyAdapter<
-    SimpleOptimizelyDecision,
-    { user?: { id?: string }; attr?: UserAttributes }
-  >(),
+
+  adapter: optimizelyFlagsAdapter({
+    sdkKey: "KMikEY9xNzWLBhN119GUz",
+  }),
 });

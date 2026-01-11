@@ -2,7 +2,6 @@ import Image from "next/image";
 import { simpleOptimizelyFlag } from "../utils/flags/simpleOptimizelyFlag";
 
 export default async function Home() {
-  const hasProductX = true;
   const reorder = await simpleOptimizelyFlag();
   const headingText =
     reorder?.variationKey === "on"

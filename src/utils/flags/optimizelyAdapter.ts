@@ -1,159 +1,103 @@
 import type { Adapter } from "flags";
 import {
+  Client,
   createBatchEventProcessor,
   createInstance,
-  createOdpManager,
   createPollingProjectConfigManager,
   NOTIFICATION_TYPES,
   UserAttributes,
 } from "@optimizely/optimizely-sdk";
 
 export type OptimizelyAdapterOptions = {
-  sdkKey?: string;
+  sdkKey: string;
   updateInterval?: number;
 };
 
-/**
- * Factory that creates an Optimizely adapter compatible with the Vercel Flags SDK.
- *
- * Example usage:
- *   adapter: optimizelyAdapter<MyFlagValue, { user?: { id?: string }, attr?: UserAttributes }>()
- *
- * Notes:
- * - `ValueType` should match the shape returned by `decide`.
- * - `EntitiesType` can include a `user` object with `id`, and optional `attr` matching `UserAttributes`.
- */
-export function createOptimizelyAdapter(
-  options: OptimizelyAdapterOptions = {}
-) {
-  const SDK_KEY = "KMikEY9xNzWLBhN119GUz";
-  const sdkKey = options.sdkKey ?? process.env.OPTIMIZELY_SDK_KEY ?? SDK_KEY;
-  const updateInterval = options.updateInterval ?? 10000;
+export type FlagsOptimizelyDecision = {
+  variationKey: string | null;
+  enabled: boolean;
+  variables: Record<string, unknown>;
+  ruleKey: string | null;
+  flagKey: string;
+};
 
-  if (
-    sdkKey === SDK_KEY &&
-    !options.sdkKey &&
-    !process.env.OPTIMIZELY_SDK_KEY
-  ) {
-    console.warn(
-      "Optimizely Adapter: Using hard-coded fallback SDK key for development/testing"
+export type OptimizelyAdapterEntities = {
+  user: { id: string | null };
+  attr?: UserAttributes;
+};
+
+let optimizelyInstance: Client | null = null;
+let optimizelyReadyPromise: Promise<unknown> | null = null;
+
+export function optimizelyFlagsAdapter(
+  options: OptimizelyAdapterOptions
+): Adapter<FlagsOptimizelyDecision, OptimizelyAdapterEntities> {
+  if (!options.sdkKey) {
+    throw new Error("Optimizely Adapter: sdkKey is required");
+  }
+
+  if (!optimizelyInstance) {
+    const updateInterval = options.updateInterval ?? 10000;
+
+    const projectConfigManager = createPollingProjectConfigManager({
+      sdkKey: options.sdkKey,
+      updateInterval,
+      autoUpdate: true,
+    });
+
+    const eventProcessor = createBatchEventProcessor();
+
+    optimizelyInstance = createInstance({
+      projectConfigManager,
+      eventProcessor,
+    });
+
+    optimizelyInstance.notificationCenter.addNotificationListener(
+      NOTIFICATION_TYPES.OPTIMIZELY_CONFIG_UPDATE,
+      () => {
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[Optimizely] Datafile loaded or updated");
+        }
+      }
     );
   }
 
-  // Shared instances for polling/config & events
-  const pollingConfigManager = createPollingProjectConfigManager({
-    sdkKey,
-    updateInterval,
-    autoUpdate: true,
-  });
-
-  const batchEventProcessor = createBatchEventProcessor();
-  const odpManager = createOdpManager();
-
-  const optimizely = createInstance({
-    projectConfigManager: pollingConfigManager,
-    eventProcessor: batchEventProcessor,
-    odpManager,
-  });
-
-  optimizely.notificationCenter.addNotificationListener(
-    NOTIFICATION_TYPES.OPTIMIZELY_CONFIG_UPDATE,
-    () => {
-      // Helpful for debugging when running locally
-      console.log("Optimizely datafile loaded or updated");
-    }
-  );
-
-  return function optimizelyAdapter<
-    ValueType,
-    EntitiesType extends Record<string, unknown> = Record<string, unknown>
-  >(): Adapter<ValueType, EntitiesType> {
-    return {
-      async decide({ key, entities }): Promise<ValueType> {
-        type EntitiesLike = {
-          user?: { id?: string | null };
-          attr?: UserAttributes | undefined;
-        };
-
-        const typedEntities = entities as unknown as EntitiesLike | undefined;
-        const userId = typedEntities?.user?.id;
-        const attrs = typedEntities?.attr;
-
-        console.log("Decide called with key:", key, "userId:", userId);
-        console.log("Decide called with attributes:", attrs);
-
-        // If we don't have an ID, return a disabled/empty value that matches
-        // the shape expected by consumers. We can't know ValueType generically,
-        // so users should prefer a typed ValueType that this adapter returns.
-        if (!userId) {
-          const disabledValue = {
-            variationKey: null,
-            enabled: false,
-            variables: {},
-            ruleKey: null,
-            flagKey: key,
-          } as unknown as ValueType;
-
-          return disabledValue;
-        }
-
-        await optimizely.onReady();
-
-        const user = optimizely.createUserContext(userId, attrs);
-
-        const decision = user.decide(key);
-        console.log("Optimizely decision enabled:", decision.enabled);
-        console.log("Optimizely decision variationKey:", decision.variationKey);
-
-        if (!decision || !decision.enabled) {
-          return {
-            variationKey: null,
-            enabled: false,
-            variables: {},
-            ruleKey: null,
-            flagKey: key,
-          } as unknown as ValueType;
-        }
-
-        // Map the Optimizely decision shape into a predictable object.
-        // Consumers should type `ValueType` to match this shape (see examples).
-        return {
-          variationKey: decision.variationKey,
-          enabled: decision.enabled,
-          variables: decision.variables ?? {},
-          ruleKey: decision.ruleKey ?? null,
-          flagKey: key,
-        } as unknown as ValueType;
-      },
-    };
-  };
-}
-
-// Default lazy adapter that reads SDK key from OPTIMIZELY_SDK_KEY
-export function optimizelyAdapter<
-  ValueType,
-  EntitiesType extends Record<string, unknown> = Record<string, unknown>
->() {
-  let innerAdapter: Adapter<ValueType, EntitiesType> | undefined;
-
-  const ensureAdapter = () => {
-    if (!innerAdapter) {
-      const sdkKey = process.env.OPTIMIZELY_SDK_KEY;
-      innerAdapter = createOptimizelyAdapter({ sdkKey })() as Adapter<
-        /* generic */
-        ValueType,
-        EntitiesType
-      >;
-    }
-  };
+  optimizelyReadyPromise = optimizelyInstance.onReady({ timeout: 5000 });
 
   return {
-    async decide(ctx) {
-      ensureAdapter();
-      if (!innerAdapter) {
-        throw new Error("Optimizely Adapter is not configured.");
+    async decide({ key, entities }): Promise<FlagsOptimizelyDecision> {
+      const typedEntities = entities as OptimizelyAdapterEntities;
+      if (!typedEntities.user.id) {
+        throw new Error(
+          "Optimizely Adapter: entities with user id are required for decision"
+        );
       }
-      return innerAdapter.decide(ctx);
+
+      console.log("Decide with key:", key, "userId:", typedEntities.user.id);
+      console.log("Decide with attributes:", typedEntities.attr);
+
+      if (!optimizelyInstance || !optimizelyReadyPromise) {
+        throw new Error("Optimizely SDK is not initialized");
+      }
+
+      await optimizelyReadyPromise;
+
+      const user = optimizelyInstance.createUserContext(
+        typedEntities.user.id,
+        typedEntities.attr
+      );
+      const decision = user.decide(key);
+
+      console.log("Optimizely decision enabled:", decision.enabled);
+      console.log("Optimizely decision variationKey:", decision.variationKey);
+
+      return {
+        variationKey: decision.variationKey,
+        enabled: decision.enabled,
+        variables: decision.variables ?? {},
+        ruleKey: decision.ruleKey ?? null,
+        flagKey: key,
+      };
     },
-  } as Adapter<ValueType, EntitiesType>;
+  };
 }
